@@ -54,7 +54,7 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 	switch mediaType {
 	case "image/png":
 		ext = "png"
-	case "image/jpeg", "image/jpg":
+	case "image/jpeg":
 		ext = "jpg"
 	default:
 		respondWithError(w, http.StatusBadRequest, "content type error", err)
