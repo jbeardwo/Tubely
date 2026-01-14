@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -12,10 +13,13 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
+	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 	"github.com/google/uuid"
 )
 
@@ -57,7 +61,6 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusBadRequest, "form error", err)
 		return
 	}
-	defer fileData.Close()
 
 	contentType := fileHeaders.Header.Get("Content-Type")
 	mediaType, _, err := mime.ParseMediaType(contentType)
@@ -138,7 +141,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		respondWithError(w, http.StatusInternalServerError, "s3 upload error", err)
 		return
 	}
-	videoURL := "https://" + cfg.s3Bucket + ".s3." + cfg.s3Region + ".amazonaws.com/" + key
+	videoURL := cfg.s3Bucket + "," + key
 	dbVideo.VideoURL = &videoURL
 
 	err = cfg.db.UpdateVideo(dbVideo)
@@ -189,4 +192,35 @@ func processVideoForFastStart(filePath string) (string, error) {
 		return "", fmt.Errorf("error running ffmpeg: %v", err)
 	}
 	return outFP, nil
+}
+
+func generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime time.Duration) (string, error) {
+	presignClient := s3.NewPresignClient(s3Client)
+	req, err := presignClient.PresignGetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: &bucket,
+		Key:    &key,
+	}, s3.WithPresignExpires(expireTime))
+	if err != nil {
+		return "", err
+	}
+	return req.URL, nil
+}
+
+func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) {
+	if video.VideoURL == nil || *video.VideoURL == "" {
+		// No object stored yet – nothing to sign
+		return video, nil
+	}
+	vals := strings.Split(*video.VideoURL, ",")
+	if len(vals) != 2 {
+		return database.Video{}, fmt.Errorf("problem with VideoURL field")
+	}
+	bucket, key := vals[0], vals[1]
+	expireTime := 5 * time.Minute
+	presign, err := generatePresignedURL(cfg.s3Client, bucket, key, expireTime)
+	if err != nil {
+		return database.Video{}, err
+	}
+	video.VideoURL = &presign
+	return video, nil
 }
